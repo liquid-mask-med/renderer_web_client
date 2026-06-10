@@ -24,17 +24,17 @@ function readSettings(): RendererSettings {
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null)
   const volumeRef = useRef<VolumeData | undefined>(undefined)
-  const [settings, setSettings] = useState(readSettings)
+  const [settings] = useState(readSettings)
   const [volumeVersion, setVolumeVersion] = useState(0)
   const [volumeInfo, setVolumeInfo] = useState<Omit<VolumeData, 'pixels'>>()
   const [loading, setLoading] = useState(false)
-  const [message, setMessage] = useState('本地 WebGL 已就绪')
+  const [message, setMessage] = useState(`${settings.mode} / ${settings.mode === 'Local' ? settings.backend : settings.remoteBackend}`)
   const reportError = useCallback((error: string) => setMessage(error), [])
 
-  const updateSettings = (next: RendererSettings) => {
-    setSettings(next)
+  const saveSettings = (next: RendererSettings) => {
     localStorage.setItem('renderer-settings', JSON.stringify(next))
-    setMessage(`${next.mode} / ${next.mode === 'Local' ? next.backend : next.remoteBackend} 设置已保存`)
+    setMessage('设置已保存，刷新页面后生效')
+    window.alert('设置已保存，刷新页面后生效')
   }
 
   const openFolder = async (files: FileList | null) => {
@@ -71,7 +71,7 @@ export default function App() {
           webkitdirectory=""
           onChange={(event) => openFolder(event.target.files)}
         />
-        <SettingsPanel settings={settings} onChange={updateSettings} />
+        <SettingsPanel settings={settings} onSave={saveSettings} />
         <span className="study-info">
           {volumeInfo ? `${volumeInfo.width} x ${volumeInfo.height} x ${volumeInfo.depth}` : ''}
         </span>

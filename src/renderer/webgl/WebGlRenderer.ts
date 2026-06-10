@@ -177,7 +177,7 @@ export class WebGlRenderer implements Renderer {
     const up = vec3.normalize(vec3.create(), vec3.fromValues(camera[4], camera[5], camera[6]))
     mat4.multiply(camera, mat4.fromRotation(mat4.create(), -radians(dx), up), camera)
     const right = vec3.normalize(vec3.create(), vec3.fromValues(camera[0], camera[1], camera[2]))
-    mat4.multiply(camera, mat4.fromRotation(mat4.create(), radians(dy), right), camera)
+    mat4.multiply(camera, mat4.fromRotation(mat4.create(), -radians(dy), right), camera)
     mat4.invert(this.viewMatrix, camera)
   }
 
