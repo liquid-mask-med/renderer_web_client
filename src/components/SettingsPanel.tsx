@@ -21,7 +21,7 @@ export function SettingsPanel({ settings, onChange }: Props) {
         {settings.mode === 'Local' ? (
           <select value={settings.backend} onChange={(event) => update({ backend: event.target.value as RendererSettings['backend'] })}>
             <option value="WebGL">WebGL</option>
-            <option value="WebGPU" disabled>WebGPU（待实现）</option>
+            <option value="WebGPU">WebGPU</option>
           </select>
         ) : (
           <select value={settings.remoteBackend} onChange={(event) => update({ remoteBackend: event.target.value as RendererSettings['remoteBackend'] })}>

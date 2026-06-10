@@ -1,9 +1,12 @@
-import { useEffect, useRef, type RefObject } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { vec3 } from 'gl-matrix'
-import type { VolumeData } from '../types'
+import type { LocalBackend, VolumeData } from '../types'
+import type { Renderer } from '../renderer/Renderer'
 import { WebGlRenderer } from '../renderer/webgl/WebGlRenderer'
+import { WebGpuRenderer } from '../renderer/webgpu/WebGpuRenderer'
 
 interface Props {
+  backend: LocalBackend
   volumeRef: RefObject<VolumeData | undefined>
   volumeVersion: number
   onError(message: string): void
@@ -16,9 +19,10 @@ const viewLabels = [
   ['Volume', '', '', '', ''],
 ]
 
-export function ViewerCanvas({ volumeRef, volumeVersion, onError }: Props) {
+export function ViewerCanvas({ backend, volumeRef, volumeVersion, onError }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const rendererRef = useRef<WebGlRenderer | undefined>(undefined)
+  const rendererRef = useRef<Renderer | undefined>(undefined)
+  const [rendererVersion, setRendererVersion] = useState(0)
   const originRef = useRef(vec3.create())
   const draggingRef = useRef<{ x: number; y: number } | undefined>(undefined)
   const volumeDirtyRef = useRef(false)
@@ -52,29 +56,44 @@ export function ViewerCanvas({ volumeRef, volumeVersion, onError }: Props) {
 
   useEffect(() => {
     if (!canvasRef.current) return
-    try {
-      rendererRef.current = new WebGlRenderer(canvasRef.current, onError)
+    let cancelled = false
+    let observer: ResizeObserver | undefined
+    const initialize = async () => {
+      try {
+        const renderer = backend === 'WebGPU'
+          ? await WebGpuRenderer.create(canvasRef.current!, onError)
+          : new WebGlRenderer(canvasRef.current!, onError)
+        if (cancelled) {
+          renderer.dispose()
+          return
+        }
+        rendererRef.current = renderer
       const resize = () => {
         const canvas = canvasRef.current!
         const width = Math.max(1, Math.floor(canvas.clientWidth * devicePixelRatio))
         const height = Math.max(1, Math.floor(canvas.clientHeight * devicePixelRatio))
         canvas.width = width
         canvas.height = height
-        for (let index = 0; index < 4; index += 1) rendererRef.current?.resizeViewport(index, width, height)
-        rendererRef.current?.render(0xF)
+        for (let index = 0; index < 4; index += 1) renderer.resizeViewport(index, width, height)
+        renderer.render(0xF)
       }
-      const observer = new ResizeObserver(resize)
-      observer.observe(canvasRef.current)
+      observer = new ResizeObserver(resize)
+      observer.observe(canvasRef.current!)
       resize()
-      return () => {
-        observer.disconnect()
-        if (renderFrameRef.current !== undefined) cancelAnimationFrame(renderFrameRef.current)
-        rendererRef.current?.dispose()
+        setRendererVersion((current) => current + 1)
+      } catch (reason) {
+        onError(reason instanceof Error ? reason.message : String(reason))
       }
-    } catch (reason) {
-      onError(reason instanceof Error ? reason.message : String(reason))
     }
-  }, [onError])
+    void initialize()
+    return () => {
+      cancelled = true
+      observer?.disconnect()
+      if (renderFrameRef.current !== undefined) cancelAnimationFrame(renderFrameRef.current)
+      rendererRef.current?.dispose()
+      rendererRef.current = undefined
+    }
+  }, [backend, onError])
 
   useEffect(() => {
     const volume = volumeRef.current
@@ -91,7 +110,7 @@ export function ViewerCanvas({ volumeRef, volumeVersion, onError }: Props) {
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : String(reason))
     }
-  }, [volumeVersion, onError])
+  }, [volumeVersion, rendererVersion, onError])
 
   const viewIndexAt = (x: number, y: number) => (y < 0.5 ? 0 : 2) + (x >= 0.5 ? 1 : 0)
 

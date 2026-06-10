@@ -79,7 +79,7 @@ export default function App() {
       </header>
 
       {settings.mode === 'Local'
-        ? <ViewerCanvas volumeRef={volumeRef} volumeVersion={volumeVersion} onError={reportError} />
+        ? <ViewerCanvas backend={settings.backend} volumeRef={volumeRef} volumeVersion={volumeVersion} onError={reportError} />
         : <RemoteViewerCanvas volumeRef={volumeRef} volumeVersion={volumeVersion} settings={settings} onStatus={setMessage} onError={reportError} />}
     </main>
   )
