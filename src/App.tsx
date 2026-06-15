@@ -75,7 +75,7 @@ export default function App() {
         <span className="study-info">
           {volumeInfo ? `${volumeInfo.width} x ${volumeInfo.height} x ${volumeInfo.depth}` : ''}
         </span>
-        <span className="status-text">{message}</span>
+        <span className="status-text">当前：{settings.mode} / {settings.mode === 'Local' ? settings.backend : settings.remoteBackend}</span>
       </header>
 
       {settings.mode === 'Local'

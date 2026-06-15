@@ -4,9 +4,9 @@ import type { VolumeData } from '../../types'
 import { RenderBox } from '../webgl/RenderBox'
 import { buildRgbaLut } from '../webgl/TransferFunction'
 import { clearShader, mprShader, volumeShader } from './shaders'
+import type { SliceDisplayMapping } from '../../mpr/sliceGeometry'
 
-interface SliceDesc { origin: vec3; axisU: vec3; axisV: vec3 }
-interface Aabb { min: vec3; max: vec3 }
+interface SliceDesc { origin: vec3; axisU: vec3; axisV: vec3; mapping: SliceDisplayMapping }
 interface Viewport { x: number; y: number; width: number; height: number }
 
 const radians = (degrees: number) => degrees * Math.PI / 180
@@ -34,9 +34,7 @@ export class WebGpuRenderer implements Renderer {
   private readonly projectMatrix = mat4.create()
   private readonly sliceStates: SliceDesc[] = Array.from({ length: 3 }, () => ({
     origin: vec3.create(), axisU: vec3.create(), axisV: vec3.create(),
-  }))
-  private readonly sliceUvBounds: Aabb[] = Array.from({ length: 3 }, () => ({
-    min: vec3.create(), max: vec3.create(),
+    mapping: { centerU: 0, centerV: 0, halfU: 1, halfV: 1 },
   }))
   private readonly viewports: Viewport[] = Array.from({ length: 4 }, () => ({ x: 0, y: 0, width: 0, height: 0 }))
 
@@ -156,26 +154,9 @@ export class WebGpuRenderer implements Renderer {
     }
   }
 
-  setUpSliceState(index: number, origin: vec3, axisU: vec3, axisV: vec3) {
-    if (!this.renderBox) return
-    const slice = { origin: vec3.clone(origin), axisU: vec3.normalize(vec3.create(), axisU), axisV: vec3.normalize(vec3.create(), axisV) }
+  setUpSliceState(index: number, origin: vec3, axisU: vec3, axisV: vec3, mapping: SliceDisplayMapping) {
+    const slice = { origin: vec3.clone(origin), axisU: vec3.normalize(vec3.create(), axisU), axisV: vec3.normalize(vec3.create(), axisV), mapping }
     this.sliceStates[index] = slice
-    const normal = vec3.normalize(vec3.create(), vec3.cross(vec3.create(), slice.axisU, slice.axisV))
-    const uvs: vec3[] = []
-    for (const edge of this.renderBox.edges) {
-      const l1 = vec3.sub(vec3.create(), edge.p1, slice.origin)
-      const l2 = vec3.sub(vec3.create(), edge.p2, slice.origin)
-      const da = vec3.dot(l1, normal), db = vec3.dot(l2, normal)
-      if (da * db <= 0 && Math.abs(da - db) >= Number.EPSILON) {
-        const point = vec3.scaleAndAdd(vec3.create(), edge.p1, vec3.sub(vec3.create(), edge.p2, edge.p1), da / (da - db))
-        uvs.push(vec3.fromValues(vec3.dot(vec3.sub(vec3.create(), point, slice.origin), slice.axisU), vec3.dot(vec3.sub(vec3.create(), point, slice.origin), slice.axisV), 0))
-      }
-    }
-    if (uvs.length) {
-      const min = vec3.clone(uvs[0]), max = vec3.clone(uvs[0])
-      uvs.forEach((point) => { vec3.min(min, min, point); vec3.max(max, max, point) })
-      this.sliceUvBounds[index] = { min, max }
-    }
   }
 
   resizeViewport(index: number, width: number, height: number) {
@@ -274,13 +255,14 @@ export class WebGpuRenderer implements Renderer {
   }
 
   private renderSlice(encoder: GPUCommandEncoder, index: number) {
-    const viewport = this.viewports[index], slice = this.sliceStates[index], bounds = this.sliceUvBounds[index]
+    const viewport = this.viewports[index], slice = this.sliceStates[index]
     if (!viewport.width || !this.sliceBindGroups[index]) return
     const size = this.physicalSize()
-    const values = new Float32Array(28)
+    const values = new Float32Array(24)
     values.set([...slice.origin, 0], 0); values.set([...slice.axisU, 0], 4); values.set([...slice.axisV, 0], 8)
-    values.set([...bounds.min, 0], 12); values.set([...bounds.max, 0], 16); values.set([...size, 0], 20)
-    values.set([this.renderParams!.windowCenter, this.renderParams!.windowWidth, viewport.width, viewport.height], 24)
+    values.set([slice.mapping.centerU, slice.mapping.centerV, slice.mapping.halfU, slice.mapping.halfV], 12)
+    values.set([...size, 0], 16)
+    values.set([this.renderParams!.windowCenter, this.renderParams!.windowWidth, viewport.width, viewport.height], 20)
     this.device.queue.writeBuffer(this.sliceUniformBuffers[index], 0, values)
     const pass = encoder.beginRenderPass({ colorAttachments: [{ view: this.outputTexture!.createView(), loadOp: 'load', storeOp: 'store' }] })
     pass.setViewport(viewport.x, viewport.y, viewport.width, viewport.height, 0, 1)

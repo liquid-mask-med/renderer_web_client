@@ -4,6 +4,7 @@ import type { LocalBackend, VolumeData } from '../types'
 import type { Renderer } from '../renderer/Renderer'
 import { WebGlRenderer } from '../renderer/webgl/WebGlRenderer'
 import { WebGpuRenderer } from '../renderer/webgpu/WebGpuRenderer'
+import { calculateSliceDisplayMapping } from '../mpr/sliceGeometry'
 
 interface Props {
   backend: LocalBackend
@@ -48,10 +49,20 @@ export function ViewerCanvas({ backend, volumeRef, volumeVersion, onError }: Pro
 
   const updateSlices = () => {
     const renderer = rendererRef.current
-    if (!renderer) return
-    renderer.setUpSliceState(0, originRef.current, vec3.fromValues(1, 0, 0), vec3.fromValues(0, -1, 0))
-    renderer.setUpSliceState(1, originRef.current, vec3.fromValues(0, 1, 0), vec3.fromValues(0, 0, 1))
-    renderer.setUpSliceState(2, originRef.current, vec3.fromValues(1, 0, 0), vec3.fromValues(0, 0, 1))
+    const volume = volumeRef.current
+    const canvas = canvasRef.current
+    if (!renderer || !volume || !canvas) return
+    const width = Math.max(1, Math.floor(canvas.width / 2))
+    const height = Math.max(1, Math.floor(canvas.height / 2))
+    const slices = [
+      [vec3.fromValues(1, 0, 0), vec3.fromValues(0, -1, 0)],
+      [vec3.fromValues(0, 1, 0), vec3.fromValues(0, 0, 1)],
+      [vec3.fromValues(1, 0, 0), vec3.fromValues(0, 0, 1)],
+    ]
+    slices.forEach(([u, v], index) => renderer.setUpSliceState(
+      index, originRef.current, u, v,
+      calculateSliceDisplayMapping(volume, originRef.current, u, v, width, height),
+    ))
   }
 
   useEffect(() => {
@@ -75,6 +86,7 @@ export function ViewerCanvas({ backend, volumeRef, volumeVersion, onError }: Pro
         canvas.width = width
         canvas.height = height
         for (let index = 0; index < 4; index += 1) renderer.resizeViewport(index, width, height)
+        updateSlices()
         renderer.render(0xF)
       }
       observer = new ResizeObserver(resize)

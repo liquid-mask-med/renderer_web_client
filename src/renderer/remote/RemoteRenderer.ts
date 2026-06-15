@@ -1,5 +1,6 @@
 import type { vec3 } from 'gl-matrix'
 import type { RemoteBackend, VolumeData } from '../../types'
+import type { SliceDisplayMapping } from '../../mpr/sliceGeometry'
 
 export class RemoteRenderer {
   private sessionId?: string
@@ -37,12 +38,12 @@ export class RemoteRenderer {
     await this.request(`/viewports/${index}?width=${width}&height=${height}`, { method: 'PUT' })
   }
 
-  async setUpSliceState(index: number, origin: vec3, axisU: vec3, axisV: vec3) {
+  async setUpSliceState(index: number, origin: vec3, axisU: vec3, axisV: vec3, mapping: SliceDisplayMapping) {
     const vector = (value: vec3) => ({ x: value[0], y: value[1], z: value[2] })
     await this.request(`/slices/${index}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ origin: vector(origin), axisU: vector(axisU), axisV: vector(axisV) }),
+      body: JSON.stringify({ origin: vector(origin), axisU: vector(axisU), axisV: vector(axisV), mapping }),
     })
   }
 

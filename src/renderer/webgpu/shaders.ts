@@ -71,8 +71,7 @@ struct SliceUniforms {
   origin: vec4<f32>,
   axisU: vec4<f32>,
   axisV: vec4<f32>,
-  uvMin: vec4<f32>,
-  uvMax: vec4<f32>,
+  sliceMapping: vec4<f32>,
   volumeSize: vec4<f32>,
   params: vec4<f32>,
 }
@@ -99,15 +98,8 @@ fn vertexMain(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  let viewportAspect = uniforms.params.z / uniforms.params.w;
-  let centerU = (uniforms.uvMax.x + uniforms.uvMin.x) * 0.5;
-  let centerV = (uniforms.uvMax.y + uniforms.uvMin.y) * 0.5;
-  var halfU = max((uniforms.uvMax.x - uniforms.uvMin.x) * 0.5, 1e-5);
-  var halfV = max((uniforms.uvMax.y - uniforms.uvMin.y) * 0.5, 1e-5);
-  if (viewportAspect > halfU / halfV) { halfU = halfV * viewportAspect; }
-  else { halfV = halfU / viewportAspect; }
-  let uOffset = centerU + (input.uv.x - 0.5) * 2.0 * halfU;
-  let vOffset = centerV + (input.uv.y - 0.5) * 2.0 * halfV;
+  let uOffset = uniforms.sliceMapping.x + (input.uv.x - 0.5) * 2.0 * uniforms.sliceMapping.z;
+  let vOffset = uniforms.sliceMapping.y + (input.uv.y - 0.5) * 2.0 * uniforms.sliceMapping.w;
   let worldPos = uniforms.origin.xyz + uniforms.axisU.xyz * uOffset + uniforms.axisV.xyz * vOffset;
   let coord = worldPos / uniforms.volumeSize.xyz + vec3<f32>(0.5);
   if (any(coord <= vec3<f32>(0.0)) || any(coord >= vec3<f32>(1.0))) { discard; }

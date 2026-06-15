@@ -4,9 +4,9 @@ import type { VolumeData } from '../../types'
 import { RenderBox } from './RenderBox'
 import { buildRgbaLut } from './TransferFunction'
 import { mainFragmentShader, mainVertexShader, mprFragmentShader, mprVertexShader } from './shaders'
+import type { SliceDisplayMapping } from '../../mpr/sliceGeometry'
 
-interface SliceDesc { origin: vec3; axisU: vec3; axisV: vec3 }
-interface Aabb { min: vec3; max: vec3 }
+interface SliceDesc { origin: vec3; axisU: vec3; axisV: vec3; mapping: SliceDisplayMapping }
 interface Viewport { x: number; y: number; width: number; height: number }
 
 const createShader = (gl: WebGL2RenderingContext, type: number, source: string) => {
@@ -49,9 +49,7 @@ export class WebGlRenderer implements Renderer {
   private readonly projectMatrix = mat4.create()
   private readonly sliceStates: SliceDesc[] = Array.from({ length: 3 }, () => ({
     origin: vec3.create(), axisU: vec3.create(), axisV: vec3.create(),
-  }))
-  private readonly sliceUvBounds: Aabb[] = Array.from({ length: 3 }, () => ({
-    min: vec3.create(), max: vec3.create(),
+    mapping: { centerU: 0, centerV: 0, halfU: 1, halfV: 1 },
   }))
   private readonly viewports: Viewport[] = Array.from({ length: 4 }, () => ({ x: 0, y: 0, width: 0, height: 0 }))
 
@@ -131,35 +129,14 @@ export class WebGlRenderer implements Renderer {
     if (error !== gl.NO_ERROR) throw new Error(`OpenGL 纹理上传失败：${error}`)
   }
 
-  setUpSliceState(index: number, origin: vec3, axisU: vec3, axisV: vec3) {
-    if (!this.renderBox) return
+  setUpSliceState(index: number, origin: vec3, axisU: vec3, axisV: vec3, mapping: SliceDisplayMapping) {
     const slice = {
       origin: vec3.clone(origin),
       axisU: vec3.normalize(vec3.create(), axisU),
       axisV: vec3.normalize(vec3.create(), axisV),
+      mapping,
     }
     this.sliceStates[index] = slice
-    const normal = vec3.normalize(vec3.create(), vec3.cross(vec3.create(), slice.axisU, slice.axisV))
-    const uvs: vec3[] = []
-    for (const edge of this.renderBox.edges) {
-      const l1 = vec3.sub(vec3.create(), edge.p1, slice.origin)
-      const l2 = vec3.sub(vec3.create(), edge.p2, slice.origin)
-      const da = vec3.dot(l1, normal)
-      const db = vec3.dot(l2, normal)
-      if (da * db <= 0 && Math.abs(da - db) >= Number.EPSILON) {
-        const point = vec3.scaleAndAdd(vec3.create(), edge.p1, vec3.sub(vec3.create(), edge.p2, edge.p1), da / (da - db))
-        uvs.push(vec3.fromValues(
-          vec3.dot(vec3.sub(vec3.create(), point, slice.origin), slice.axisU),
-          vec3.dot(vec3.sub(vec3.create(), point, slice.origin), slice.axisV),
-          0,
-        ))
-      }
-    }
-    if (uvs.length) {
-      const min = vec3.clone(uvs[0]), max = vec3.clone(uvs[0])
-      uvs.forEach((point) => { vec3.min(min, min, point); vec3.max(max, max, point) })
-      this.sliceUvBounds[index] = { min, max }
-    }
   }
 
   resizeViewport(index: number, width: number, height: number) {
@@ -251,8 +228,8 @@ export class WebGlRenderer implements Renderer {
     gl.uniform3fv(uniform(gl, program, 'origin'), this.sliceStates[index].origin)
     gl.uniform3fv(uniform(gl, program, 'axisU'), this.sliceStates[index].axisU)
     gl.uniform3fv(uniform(gl, program, 'axisV'), this.sliceStates[index].axisV)
-    gl.uniform3fv(uniform(gl, program, 'UVMin'), this.sliceUvBounds[index].min)
-    gl.uniform3fv(uniform(gl, program, 'UVMax'), this.sliceUvBounds[index].max)
+    gl.uniform2f(uniform(gl, program, 'centerUV'), this.sliceStates[index].mapping.centerU, this.sliceStates[index].mapping.centerV)
+    gl.uniform2f(uniform(gl, program, 'halfUV'), this.sliceStates[index].mapping.halfU, this.sliceStates[index].mapping.halfV)
     gl.uniform3fv(uniform(gl, program, 'volumeSize'), this.physicalSize())
     gl.bindVertexArray(this.mprVao)
     gl.drawArrays(gl.TRIANGLES, 0, 6)

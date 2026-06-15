@@ -2,6 +2,7 @@ import { useEffect, useRef, type RefObject } from 'react'
 import { vec3 } from 'gl-matrix'
 import type { RendererSettings, VolumeData } from '../types'
 import { RemoteRenderer } from '../renderer/remote/RemoteRenderer'
+import { calculateSliceDisplayMapping } from '../mpr/sliceGeometry'
 
 interface Props {
   volumeRef: RefObject<VolumeData | undefined>
@@ -51,9 +52,19 @@ export function RemoteViewerCanvas({ volumeRef, volumeVersion, settings, onStatu
 
   const updateSlices = async () => {
     const renderer = rendererRef.current!
-    await renderer.setUpSliceState(0, originRef.current, vec3.fromValues(1,0,0), vec3.fromValues(0,-1,0))
-    await renderer.setUpSliceState(1, originRef.current, vec3.fromValues(0,1,0), vec3.fromValues(0,0,1))
-    await renderer.setUpSliceState(2, originRef.current, vec3.fromValues(1,0,0), vec3.fromValues(0,0,1))
+    const volume = volumeRef.current
+    const canvas = canvasRef.current
+    if (!volume || !canvas) return
+    const width = Math.max(1, Math.floor(canvas.width / 2)), height = Math.max(1, Math.floor(canvas.height / 2))
+    const slices = [
+      [vec3.fromValues(1,0,0), vec3.fromValues(0,-1,0)],
+      [vec3.fromValues(0,1,0), vec3.fromValues(0,0,1)],
+      [vec3.fromValues(1,0,0), vec3.fromValues(0,0,1)],
+    ]
+    for (let index = 0; index < slices.length; index += 1) {
+      const [u, v] = slices[index]
+      await renderer.setUpSliceState(index, originRef.current, u, v, calculateSliceDisplayMapping(volume, originRef.current, u, v, width, height))
+    }
   }
 
   const resize = async () => {
