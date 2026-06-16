@@ -1,8 +1,18 @@
-import { useEffect, useRef, type RefObject } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { vec3 } from 'gl-matrix'
 import type { RendererSettings, VolumeData } from '../types'
 import { RemoteRenderer } from '../renderer/remote/RemoteRenderer'
 import { calculateSliceDisplayMapping } from '../mpr/sliceGeometry'
+import { calculateSliceCrosshair, type SliceCrosshair } from '../mpr/crosshairGeometry'
+import { SliceCrosshairOverlay } from './SliceCrosshairOverlay'
+import {
+  createMprState,
+  hitTestCrosshair,
+  rotateMpr,
+  translateMpr,
+  type SliceDrag,
+} from '../mpr/mprInteraction'
+import type { SliceDisplayMapping } from '../mpr/sliceGeometry'
 
 interface Props {
   volumeRef: RefObject<VolumeData | undefined>
@@ -20,10 +30,16 @@ const labels = [
 export function RemoteViewerCanvas({ volumeRef, volumeVersion, settings, onStatus, onError }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rendererRef = useRef<RemoteRenderer | undefined>(undefined)
-  const originRef = useRef(vec3.create())
-  const draggingRef = useRef<{ x: number; y: number } | undefined>(undefined)
+  const mprRef = useRef(createMprState())
+  const mappingsRef = useRef<SliceDisplayMapping[]>([])
+  const crosshairsRef = useRef<SliceCrosshair[]>([])
+  const draggingRef = useRef<SliceDrag | undefined>(undefined)
   const rotationRunningRef = useRef(false)
+  const sliceUpdateRunningRef = useRef(false)
+  const sliceUpdateRequestedRef = useRef(false)
   const operationRef = useRef(Promise.resolve())
+  const [crosshairs, setCrosshairs] = useState<SliceCrosshair[]>([])
+  const [cursor, setCursor] = useState('crosshair')
 
   const enqueue = (operation: () => Promise<void>) => {
     operationRef.current = operationRef.current
@@ -56,15 +72,39 @@ export function RemoteViewerCanvas({ volumeRef, volumeVersion, settings, onStatu
     const canvas = canvasRef.current
     if (!volume || !canvas) return
     const width = Math.max(1, Math.floor(canvas.width / 2)), height = Math.max(1, Math.floor(canvas.height / 2))
-    const slices = [
-      [vec3.fromValues(1,0,0), vec3.fromValues(0,-1,0)],
-      [vec3.fromValues(0,1,0), vec3.fromValues(0,0,1)],
-      [vec3.fromValues(1,0,0), vec3.fromValues(0,0,1)],
-    ]
-    for (let index = 0; index < slices.length; index += 1) {
-      const [u, v] = slices[index]
-      await renderer.setUpSliceState(index, originRef.current, u, v, calculateSliceDisplayMapping(volume, originRef.current, u, v, width, height))
+    const mpr = mprRef.current
+    const origin = vec3.clone(mpr.origin)
+    const axes = mpr.axes.map((axis) => vec3.clone(axis))
+    const views = mpr.views.map(({ u, v }) => ({ u: vec3.clone(u), v: vec3.clone(v) }))
+    const nextMappings: SliceDisplayMapping[] = []
+    const nextCrosshairs: SliceCrosshair[] = []
+    for (let index = 0; index < views.length; index += 1) {
+      const { u, v } = views[index]
+      const mapping = calculateSliceDisplayMapping(volume, origin, u, v, width, height)
+      await renderer.setUpSliceState(index, origin, u, v, mapping)
+      nextMappings.push(mapping)
+      nextCrosshairs.push(calculateSliceCrosshair(u, v, mapping, axes))
     }
+    mappingsRef.current = nextMappings
+    crosshairsRef.current = nextCrosshairs
+    setCrosshairs(nextCrosshairs)
+  }
+
+  const requestSliceUpdate = () => {
+    sliceUpdateRequestedRef.current = true
+    if (sliceUpdateRunningRef.current) return
+    sliceUpdateRunningRef.current = true
+    enqueue(async () => {
+      try {
+        while (sliceUpdateRequestedRef.current) {
+          sliceUpdateRequestedRef.current = false
+          await updateSlices()
+          for (let index = 0; index < 3; index += 1) await draw(index)
+        }
+      } finally {
+        sliceUpdateRunningRef.current = false
+      }
+    })
   }
 
   const resize = async () => {
@@ -109,7 +149,7 @@ export function RemoteViewerCanvas({ volumeRef, volumeVersion, settings, onStatu
     enqueue(async () => {
       onStatus('正在上传体数据到 renderer_server…')
       await rendererRef.current!.setUpRenderParameters(volume)
-      originRef.current = vec3.create()
+      mprRef.current = createMprState()
       await updateSlices()
       for (let index = 0; index < 4; index += 1) await draw(index)
       onStatus(`远程 ${settings.remoteBackend} 渲染完成`)
@@ -117,36 +157,82 @@ export function RemoteViewerCanvas({ volumeRef, volumeVersion, settings, onStatu
   }, [volumeVersion])
 
   const viewIndexAt = (x: number, y: number) => (y < .5 ? 0 : 2) + (x >= .5 ? 1 : 0)
+  const pointerInView = (clientX: number, clientY: number, viewIndex: number) => {
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const width = rect.width / 2
+    const height = rect.height / 2
+    return {
+      x: clientX - rect.left - (viewIndex % 2) * width,
+      y: clientY - rect.top - (viewIndex >= 2 ? height : 0),
+      width,
+      height,
+    }
+  }
   return (
     <div className="viewer-grid">
       <canvas
         ref={canvasRef}
+        style={{ cursor }}
         onWheel={(event) => {
           const index = viewIndexAt(event.nativeEvent.offsetX / event.currentTarget.clientWidth, event.nativeEvent.offsetY / event.currentTarget.clientHeight)
           if (index === 3) return
           event.preventDefault()
-          const normals = [vec3.fromValues(0,0,-1), vec3.fromValues(1,0,0), vec3.fromValues(0,1,0)]
-          vec3.scaleAndAdd(originRef.current, originRef.current, normals[index], event.deltaY / 120)
-          enqueue(async () => { await updateSlices(); await draw(index) })
+          const view = mprRef.current.views[index]
+          const normal = vec3.normalize(vec3.create(), vec3.cross(vec3.create(), view.u, view.v))
+          vec3.scaleAndAdd(mprRef.current.origin, mprRef.current.origin, normal, event.deltaY / 120)
+          requestSliceUpdate()
         }}
         onPointerDown={(event) => {
           const index = viewIndexAt(event.nativeEvent.offsetX / event.currentTarget.clientWidth, event.nativeEvent.offsetY / event.currentTarget.clientHeight)
+          const point = pointerInView(event.clientX, event.clientY, index)
           if (index === 3) {
-            event.currentTarget.setPointerCapture(event.pointerId)
-            draggingRef.current = { x: event.clientX, y: event.clientY }
+            draggingRef.current = { mode: 'volume', x: event.clientX, y: event.clientY }
+          } else {
+            const mode = hitTestCrosshair(crosshairsRef.current[index], point.x, point.y, point.width, point.height)
+            if (!mode) return
+            draggingRef.current = { mode, viewIndex: index, x: point.x, y: point.y }
           }
+          event.currentTarget.setPointerCapture(event.pointerId)
         }}
         onPointerMove={(event) => {
-          if (!draggingRef.current) return
-          const { x, y } = draggingRef.current
-          draggingRef.current = { x: event.clientX, y: event.clientY }
-          rotateIfIdle(event.clientX - x, event.clientY - y)
+          const drag = draggingRef.current
+          if (!drag) {
+            const index = viewIndexAt(event.nativeEvent.offsetX / event.currentTarget.clientWidth, event.nativeEvent.offsetY / event.currentTarget.clientHeight)
+            if (index === 3) setCursor('crosshair')
+            else {
+              const point = pointerInView(event.clientX, event.clientY, index)
+              const hit = hitTestCrosshair(crosshairsRef.current[index], point.x, point.y, point.width, point.height)
+              setCursor(hit === 'translate' ? 'move' : hit === 'rotate' ? 'grab' : 'crosshair')
+            }
+            return
+          }
+          if (drag.mode === 'volume') {
+            draggingRef.current = { mode: 'volume', x: event.clientX, y: event.clientY }
+            rotateIfIdle(event.clientX - drag.x, event.clientY - drag.y)
+            return
+          }
+          const point = pointerInView(event.clientX, event.clientY, drag.viewIndex)
+          if (drag.mode === 'translate') {
+            translateMpr(mprRef.current, drag.viewIndex, point.x - drag.x, point.y - drag.y, point.width, point.height, mappingsRef.current[drag.viewIndex])
+          } else {
+            const center = crosshairsRef.current[drag.viewIndex].center
+            if (center) rotateMpr(
+              mprRef.current,
+              drag.viewIndex,
+              drag,
+              point,
+              { x: center.x / 100 * point.width, y: center.y / 100 * point.height },
+            )
+          }
+          draggingRef.current = { ...drag, x: point.x, y: point.y }
+          requestSliceUpdate()
         }}
         onPointerUp={stopRotation}
         onPointerCancel={stopRotation}
       />
       {labels.map(([title, top, left, right, bottom], index) => (
         <div className={`view-overlay overlay-${index}${volumeRef.current ? '' : ' empty'}`} key={title}>
+          {index < 3 && <SliceCrosshairOverlay crosshair={crosshairs[index]} />}
           <div className="viewport-title">{title}</div>
           <span className="marker marker-top">{top}</span><span className="marker marker-left">{left}</span>
           <span className="marker marker-right">{right}</span><span className="marker marker-bottom">{bottom}</span>

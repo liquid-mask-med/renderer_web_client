@@ -5,6 +5,16 @@ import type { Renderer } from '../renderer/Renderer'
 import { WebGlRenderer } from '../renderer/webgl/WebGlRenderer'
 import { WebGpuRenderer } from '../renderer/webgpu/WebGpuRenderer'
 import { calculateSliceDisplayMapping } from '../mpr/sliceGeometry'
+import { calculateSliceCrosshair, type SliceCrosshair } from '../mpr/crosshairGeometry'
+import { SliceCrosshairOverlay } from './SliceCrosshairOverlay'
+import {
+  createMprState,
+  hitTestCrosshair,
+  rotateMpr,
+  translateMpr,
+  type SliceDrag,
+} from '../mpr/mprInteraction'
+import type { SliceDisplayMapping } from '../mpr/sliceGeometry'
 
 interface Props {
   backend: LocalBackend
@@ -24,8 +34,12 @@ export function ViewerCanvas({ backend, volumeRef, volumeVersion, onError }: Pro
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rendererRef = useRef<Renderer | undefined>(undefined)
   const [rendererVersion, setRendererVersion] = useState(0)
-  const originRef = useRef(vec3.create())
-  const draggingRef = useRef<{ x: number; y: number } | undefined>(undefined)
+  const [crosshairs, setCrosshairs] = useState<SliceCrosshair[]>([])
+  const [cursor, setCursor] = useState('crosshair')
+  const mprRef = useRef(createMprState())
+  const mappingsRef = useRef<SliceDisplayMapping[]>([])
+  const crosshairsRef = useRef<SliceCrosshair[]>([])
+  const draggingRef = useRef<SliceDrag | undefined>(undefined)
   const volumeDirtyRef = useRef(false)
   const renderFrameRef = useRef<number | undefined>(undefined)
 
@@ -54,15 +68,18 @@ export function ViewerCanvas({ backend, volumeRef, volumeVersion, onError }: Pro
     if (!renderer || !volume || !canvas) return
     const width = Math.max(1, Math.floor(canvas.width / 2))
     const height = Math.max(1, Math.floor(canvas.height / 2))
-    const slices = [
-      [vec3.fromValues(1, 0, 0), vec3.fromValues(0, -1, 0)],
-      [vec3.fromValues(0, 1, 0), vec3.fromValues(0, 0, 1)],
-      [vec3.fromValues(1, 0, 0), vec3.fromValues(0, 0, 1)],
-    ]
-    slices.forEach(([u, v], index) => renderer.setUpSliceState(
-      index, originRef.current, u, v,
-      calculateSliceDisplayMapping(volume, originRef.current, u, v, width, height),
-    ))
+    const mpr = mprRef.current
+    const nextMappings: SliceDisplayMapping[] = []
+    const nextCrosshairs: SliceCrosshair[] = []
+    mpr.views.forEach(({ u, v }, index) => {
+      const mapping = calculateSliceDisplayMapping(volume, mpr.origin, u, v, width, height)
+      renderer.setUpSliceState(index, mpr.origin, u, v, mapping)
+      nextMappings.push(mapping)
+      nextCrosshairs.push(calculateSliceCrosshair(u, v, mapping, mpr.axes))
+    })
+    mappingsRef.current = nextMappings
+    crosshairsRef.current = nextCrosshairs
+    setCrosshairs(nextCrosshairs)
   }
 
   useEffect(() => {
@@ -112,7 +129,7 @@ export function ViewerCanvas({ backend, volumeRef, volumeVersion, onError }: Pro
     if (!volume || !rendererRef.current) return
     try {
       rendererRef.current.setUpRenderParameters(volume)
-      originRef.current = vec3.create()
+      mprRef.current = createMprState()
       updateSlices()
       rendererRef.current.render(0x7)
       // Let the three MPR views reach the screen before the original volume ray-cast runs.
@@ -125,41 +142,88 @@ export function ViewerCanvas({ backend, volumeRef, volumeVersion, onError }: Pro
   }, [volumeVersion, rendererVersion, onError])
 
   const viewIndexAt = (x: number, y: number) => (y < 0.5 ? 0 : 2) + (x >= 0.5 ? 1 : 0)
+  const pointerInView = (clientX: number, clientY: number, viewIndex: number) => {
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const width = rect.width / 2
+    const height = rect.height / 2
+    return {
+      x: clientX - rect.left - (viewIndex % 2) * width,
+      y: clientY - rect.top - (viewIndex >= 2 ? height : 0),
+      width,
+      height,
+    }
+  }
 
   return (
     <div className="viewer-grid">
       <canvas
         ref={canvasRef}
+        style={{ cursor }}
         onWheel={(event) => {
           const index = viewIndexAt(event.nativeEvent.offsetX / event.currentTarget.clientWidth, event.nativeEvent.offsetY / event.currentTarget.clientHeight)
           if (index === 3) return
           event.preventDefault()
-          const normals = [vec3.fromValues(0, 0, -1), vec3.fromValues(1, 0, 0), vec3.fromValues(0, 1, 0)]
-          vec3.scaleAndAdd(originRef.current, originRef.current, normals[index], event.deltaY / 120)
+          const view = mprRef.current.views[index]
+          const normal = vec3.normalize(vec3.create(), vec3.cross(vec3.create(), view.u, view.v))
+          vec3.scaleAndAdd(mprRef.current.origin, mprRef.current.origin, normal, event.deltaY / 120)
           updateSlices()
-          rendererRef.current?.render(1 << index)
+          rendererRef.current?.render(0x7)
         }}
         onPointerDown={(event) => {
           const index = viewIndexAt(event.nativeEvent.offsetX / event.currentTarget.clientWidth, event.nativeEvent.offsetY / event.currentTarget.clientHeight)
-          if (index !== 3) return
+          const point = pointerInView(event.clientX, event.clientY, index)
+          if (index === 3) {
+            draggingRef.current = { mode: 'volume', x: event.clientX, y: event.clientY }
+          } else {
+            const mode = hitTestCrosshair(crosshairsRef.current[index], point.x, point.y, point.width, point.height)
+            if (!mode) return
+            draggingRef.current = { mode, viewIndex: index, x: point.x, y: point.y }
+          }
           event.currentTarget.setPointerCapture(event.pointerId)
-          draggingRef.current = { x: event.clientX, y: event.clientY }
         }}
         onPointerMove={(event) => {
-          if (!draggingRef.current) return
-          const dx = event.clientX - draggingRef.current.x
-          const dy = event.clientY - draggingRef.current.y
-          draggingRef.current = { x: event.clientX, y: event.clientY }
-          if (dx || dy) {
+          const drag = draggingRef.current
+          if (!drag) {
+            const index = viewIndexAt(event.nativeEvent.offsetX / event.currentTarget.clientWidth, event.nativeEvent.offsetY / event.currentTarget.clientHeight)
+            if (index === 3) setCursor('crosshair')
+            else {
+              const point = pointerInView(event.clientX, event.clientY, index)
+              const hit = hitTestCrosshair(crosshairsRef.current[index], point.x, point.y, point.width, point.height)
+              setCursor(hit === 'translate' ? 'move' : hit === 'rotate' ? 'grab' : 'crosshair')
+            }
+            return
+          }
+          if (drag.mode === 'volume') {
+            const dx = event.clientX - drag.x
+            const dy = event.clientY - drag.y
+            draggingRef.current = { mode: 'volume', x: event.clientX, y: event.clientY }
             rendererRef.current?.rotateCamera(dx, dy)
             markVolumeDirty()
+            return
           }
+          const point = pointerInView(event.clientX, event.clientY, drag.viewIndex)
+          if (drag.mode === 'translate') {
+            translateMpr(mprRef.current, drag.viewIndex, point.x - drag.x, point.y - drag.y, point.width, point.height, mappingsRef.current[drag.viewIndex])
+          } else {
+            const center = crosshairsRef.current[drag.viewIndex].center
+            if (center) rotateMpr(
+              mprRef.current,
+              drag.viewIndex,
+              drag,
+              point,
+              { x: center.x / 100 * point.width, y: center.y / 100 * point.height },
+            )
+          }
+          draggingRef.current = { ...drag, x: point.x, y: point.y }
+          updateSlices()
+          rendererRef.current?.render(0x7)
         }}
         onPointerUp={stopRotation}
         onPointerCancel={stopRotation}
       />
       {viewLabels.map(([title, top, left, right, bottom], index) => (
         <div className={`view-overlay overlay-${index}${volumeRef.current ? '' : ' empty'}`} key={title}>
+          {index < 3 && <SliceCrosshairOverlay crosshair={crosshairs[index]} />}
           <div className="viewport-title">{title}</div>
           <span className="marker marker-top">{top}</span>
           <span className="marker marker-left">{left}</span>
