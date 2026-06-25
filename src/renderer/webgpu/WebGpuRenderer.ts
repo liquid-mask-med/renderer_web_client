@@ -86,7 +86,7 @@ export class WebGpuRenderer implements Renderer {
       fragment: { module: mprModule, entryPoint: 'fragmentMain', targets: [{ format }] },
       primitive: { topology: 'triangle-list' },
     })
-    const volumeUniformBuffer = device.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    const volumeUniformBuffer = device.createBuffer({ size: 288, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     const sliceUniformBuffers = Array.from({ length: 3 }, () => device.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
     return new WebGpuRenderer(canvas, device, context, format, clearPipeline, volumePipeline, mprPipeline, volumeUniformBuffer, sliceUniformBuffers)
   }
@@ -219,10 +219,13 @@ export class WebGpuRenderer implements Renderer {
     const ray4 = vec4.transformMat4(vec4.create(), [0, 0, -1, 0], inverseView)
     const ray = vec3.normalize(vec3.create(), [ray4[0], ray4[1], ray4[2]])
     const size = this.physicalSize()
-    const values = new Float32Array(64)
+    const values = new Float32Array(68)
     values.set(this.modelMatrix, 0); values.set(this.viewMatrix, 16); values.set(this.projectMatrix, 32)
     values.set([size[0], size[1], size[2], 0], 48); values.set([ray[0], ray[1], ray[2], 0], 52)
-    new Uint32Array(values.buffer)[56] = Math.floor(Math.hypot(...size))
+    const stepSize = Math.min(...this.renderParams!.spacing) 
+    new Uint32Array(values.buffer)[56] = Math.ceil(Math.hypot(...size) / stepSize) + 1
+    values.set([this.renderParams!.width, this.renderParams!.height, this.renderParams!.depth, 0], 60)
+    values.set([stepSize, 0, 0, 0], 64)
     this.device.queue.writeBuffer(this.volumeUniformBuffer, 0, values)
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view: this.outputTexture!.createView(), loadOp: 'load', storeOp: 'store' }],

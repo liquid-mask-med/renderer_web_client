@@ -22,8 +22,9 @@ export class RemoteRenderer {
       depth: String(volume.depth),
       windowWidth: String(volume.windowWidth),
       windowCenter: String(volume.windowCenter),
-      spacing: String(volume.spacing[0]),
-      thickness: String(volume.spacing[2]),
+      spacingX: String(volume.spacing[0]),
+      spacingY: String(volume.spacing[1]),
+      spacingZ: String(volume.spacing[2]),
     })
     await this.request(`/volume?${query}`, {
       method: 'PUT',

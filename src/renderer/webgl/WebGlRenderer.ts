@@ -205,7 +205,10 @@ export class WebGlRenderer implements Renderer {
     gl.uniform3fv(uniform(gl, program, 'viewRay'), viewRay)
     const size = this.physicalSize()
     gl.uniform3fv(uniform(gl, program, 'volumePhysicalSize'), size)
-    gl.uniform1i(uniform(gl, program, 'maxSteps'), Math.floor(Math.hypot(...size)))
+    gl.uniform3f(uniform(gl, program, 'volumePixelSize'), this.renderParams.width, this.renderParams.height, this.renderParams.depth)
+    const stepSize = Math.min(...this.renderParams.spacing) 
+    gl.uniform1f(uniform(gl, program, 'stepSize'), stepSize)
+    gl.uniform1i(uniform(gl, program, 'maxSteps'), Math.ceil(Math.hypot(...size) / stepSize) + 1)
     gl.bindVertexArray(this.boxVao)
     gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0)
   }
